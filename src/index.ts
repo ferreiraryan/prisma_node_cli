@@ -3,31 +3,14 @@ import inquirer from "inquirer";
 
 const prisma = new PrismaClient();
 
-
-interface Student {
-  name: string,
-  email: string,
-  matricula: string,
+interface StudentData {
+  name: string;
+  email: string;
+  matricula: string;
 }
 
-
-async function createStudantInDB() {
-  const novosDados = await createStudent();
-  const aluno = await prisma.student.create({
-    data: {
-      name: novosDados.name,
-      email: novosDados.email,
-      matricula: novosDados.matricula,
-      projects: {
-
-      },
-    },
-  });
-  console.log('Novo estudante criado:', aluno);
-}
-
-async function createStudent(): Promise<Student> {
-  console.log("Por favor, insira os dados do estudante:");
+async function getStudentData(studentIdToIgnore?: string): Promise<StudentData> {
+  console.log("\nPor favor, insira os dados do estudante:");
 
   const answers = await inquirer.prompt([
     {
@@ -44,81 +27,326 @@ async function createStudent(): Promise<Student> {
     {
       type: "input",
       name: "email",
-      message: "Qual o email do aluno?"
+      message: "Qual o email do aluno?",
+      validate: async (input: string) => {
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(input)) {
+          return 'Por favor, insira um email válido.';
+        }
+        const existingStudent = await prisma.student.findUnique({
+          where: { email: input },
+        });
+        if (existingStudent && existingStudent.id !== studentIdToIgnore) {
+          return 'Este email já está em uso.';
+        }
+        return true;
+      }
     },
     {
       type: "input",
-      name: "enrollment", // Alterado para 'enrollment'
-      message: "Qual é a matrícula (enrollment) do aluno?",
+      name: "matricula",
+      message: "Qual é a matrícula do aluno?",
+      validate: async (input: string) => {
+        if (input.trim() === '') {
+          return 'A matrícula não pode ser vazia.';
+        }
+        const existingStudent = await prisma.student.findUnique({
+          where: { matricula: input },
+        });
+        if (existingStudent && existingStudent.id !== studentIdToIgnore) {
+          return 'Esta matrícula já está em uso.';
+        }
+        return true;
+      }
     },
   ]);
 
-  const newStudent: Student = {
-    name: answers.name,
-    email: answers.email,
-    matricula: answers.enrollment,
-  };
-
-  return newStudent;
+  return answers;
 }
-async function listStudant() {
-  const todos = await prisma.student.findMany({
+
+async function createStudentInDB() {
+  try {
+    const studentData = await getStudentData();
+    const student = await prisma.student.create({
+      data: studentData,
+    });
+    console.log('\nNovo estudante criado com sucesso:', student);
+  } catch (error) {
+    console.error("\nErro ao criar estudante:", error);
+  }
+}
+
+async function listStudents() {
+  const students = await prisma.student.findMany({
     include: {
       projects: true,
     }
-  })
-  return todos;
-}
-
-async function searchStudants() {
-  const { nome } = await inquirer.prompt<{ nome: string }>({
-    type: 'input',
-    name: 'nome',
-    message: 'Digite o nome do estudante:'
   });
 
-  const encontrados = await prisma.student.findMany({
+  if (students.length === 0) {
+    console.log("\nℹ️ Nenhum estudante encontrado.");
+    return;
+  }
+
+  console.log("\n--- Lista de Estudantes ---");
+  console.table(students.map(s => ({
+    ID: s.id,
+    Nome: s.name,
+    Email: s.email,
+    Matrícula: s.matricula,
+    Projetos: s.projects.length
+  })));
+  console.log("---------------------------\n");
+}
+
+async function searchStudents() {
+  const { name } = await inquirer.prompt<{ name: string }>({
+    type: 'input',
+    name: 'name',
+    message: 'Digite o nome (ou parte do nome) do estudante para buscar:',
+    validate: input => input.trim() !== '' || 'Por favor, digite um nome para a busca.'
+  });
+
+  const foundStudents = await prisma.student.findMany({
+    where: {
+      name: {
+        contains: name,
+        mode: 'insensitive',
+      }
+    },
     include: {
       projects: true,
-    },
-    where: {
-      name: nome,
-
     }
-  })
-  console.log(encontrados)
+  });
+
+  if (foundStudents.length === 0) {
+    console.log(`\nℹ️ Nenhum estudante encontrado com o nome "${name}".`);
+    return;
+  }
+
+  console.log(`\n--- Resultados da Busca por "${name}" ---`);
+  console.table(foundStudents.map(s => ({
+    ID: s.id,
+    Nome: s.name,
+    Email: s.email,
+    Matrícula: s.matricula,
+  })));
+  console.log("------------------------------------------\n");
 }
 
-async function selectStudantID() {
+async function selectStudentID(): Promise<string | null> {
+  const allStudents = await prisma.student.findMany();
 
-  const todos = await listStudant();
+  if (allStudents.length === 0) {
+    console.log("\nℹ️ Não há estudantes cadastrados para selecionar.");
+    return null;
+  }
 
-  const { studantID } = await inquirer.prompt<{ studantID: string }>([
+  const { studentID } = await inquirer.prompt<{ studentID: string }>([
     {
       type: 'list',
-      name: 'studantID',
+      name: 'studentID',
       message: 'Selecione um estudante:',
-      choices: todos.map(e => ({ name: `${e.name} (${e.email}) - ${e.matricula}`, value: e.id }))
+      choices: allStudents.map(e => ({
+        name: `${e.name} (Matrícula: ${e.matricula})`,
+        value: e.id
+      })),
+      loop: false,
     }
   ]);
-  return studantID;
+  return studentID;
 }
 
-async function updateStudant(id: string) {
-  const novosDados = await createStudent();
+async function updateStudent(id: string) {
+  try {
+    const studentData = await getStudentData(id);
+    const updatedStudent = await prisma.student.update({
+      where: { id },
+      data: studentData,
+    });
+    console.log("\n Aluno atualizado com sucesso:", updatedStudent);
+  } catch (error) {
+    console.error("\nErro ao atualizar estudante. Verifique se o ID está correto.");
+  }
+}
 
-  const alunoUpdate = await prisma.student.update({
-    where: {
-      id: id,
-    },
-    data: {
-      name: novosDados.name,
-      email: novosDados.email,
-      matricula: novosDados.matricula,
+async function deleteStudent(id: string) {
+  try {
+    const { confirm } = await inquirer.prompt<{ confirm: boolean }>([
+      {
+        type: 'confirm',
+        name: 'confirm',
+        message: 'Tem certeza que deseja remover este estudante? Esta ação não pode ser desfeita.',
+        default: false,
+      }
+    ]);
+
+    if (confirm) {
+      await prisma.student.delete({
+        where: { id },
+      });
+      console.log("\n Estudante removido com sucesso.");
+    } else {
+      console.log("\nℹ️ Remoção cancelada.");
     }
-  })
-  console.log("ALuno atualizado:", alunoUpdate);
+  } catch (error) {
+    console.error("\nErro ao remover estudante. Verifique se o ID está correto.");
+  }
+}
 
+async function addProjectToStudent() {
+  const studentId = await selectStudentID();
+  if (!studentId) return;
+
+  try {
+    const projectData = await inquirer.prompt([
+      {
+        type: 'input',
+        name: 'title',
+        message: 'Qual é o título do projeto?',
+        validate: input => input.trim() !== '' || 'O título não pode ser vazio.'
+      },
+      {
+        type: 'input',
+        name: 'description',
+        message: 'Digite uma descrição para o projeto (opcional):'
+      }
+    ]);
+
+    const newProject = await prisma.project.create({
+      data: {
+        title: projectData.title,
+        description: projectData.description,
+        studentId: studentId,
+      }
+    });
+    console.log('\n Projeto adicionado com sucesso:', newProject);
+  } catch (error) {
+    console.error('\nErro ao adicionar projeto:', error);
+  }
+}
+
+async function listStudentProjects() {
+  const studentId = await selectStudentID();
+  if (!studentId) return;
+
+  try {
+    const studentWithProjects = await prisma.student.findUnique({
+      where: { id: studentId },
+      include: { projects: true }
+    });
+
+    if (!studentWithProjects) {
+      console.log("\nEstudante não encontrado.");
+      return;
+    }
+
+    if (studentWithProjects.projects.length === 0) {
+      console.log(`\nℹ️ O estudante ${studentWithProjects.name} não possui projetos.`);
+      return;
+    }
+
+    console.log(`\n--- Projetos de ${studentWithProjects.name} ---`);
+    console.table(studentWithProjects.projects.map(p => ({
+      ID: p.id,
+      Título: p.title,
+      Descrição: p.description
+    })));
+    console.log("-------------------------------------------\n");
+
+  } catch (error) {
+    console.error('\nErro ao listar projetos:', error);
+  }
+}
+
+async function removeProjectFromStudent() {
+  const studentId = await selectStudentID();
+  if (!studentId) return;
+
+  try {
+    const studentWithProjects = await prisma.student.findUnique({
+      where: { id: studentId },
+      include: { projects: true }
+    });
+
+    if (!studentWithProjects || studentWithProjects.projects.length === 0) {
+      console.log(`\nℹ️ O estudante selecionado não possui projetos para remover.`);
+      return;
+    }
+
+    const { projectIdToDelete } = await inquirer.prompt<{ projectIdToDelete: string }>([
+      {
+        type: 'list',
+        name: 'projectIdToDelete',
+        message: 'Selecione o projeto que deseja remover:',
+        choices: studentWithProjects.projects.map(p => ({
+          name: `${p.title}`,
+          value: p.id
+        })),
+        loop: false,
+      }
+    ]);
+
+    const { confirm } = await inquirer.prompt<{ confirm: boolean }>([
+      {
+        type: 'confirm',
+        name: 'confirm',
+        message: 'Tem certeza que deseja remover este projeto?',
+        default: false,
+      }
+    ]);
+
+    if (confirm) {
+      await prisma.project.delete({
+        where: { id: projectIdToDelete }
+      });
+      console.log('\nProjeto removido com sucesso.');
+    } else {
+      console.log('\nℹ️ Remoção cancelada.');
+    }
+
+  } catch (error) {
+    console.error('\nErro ao remover projeto. Verifique se o ID está correto.');
+  }
+}
+
+async function projectMenu() {
+  let loop = true;
+  while (loop) {
+    const { option } = await inquirer.prompt<{ option: string }>([
+      {
+        type: 'list',
+        name: 'option',
+        message: 'Gerenciamento de Projetos',
+        choices: [
+          { name: 'Adicionar Projeto a um Estudante', value: 'addProject' },
+          { name: 'Listar Projetos de um Estudante', value: 'listProjects' },
+          { name: 'Remover Projeto de um Estudante', value: 'removeProject' },
+          new inquirer.Separator(),
+          { name: 'Voltar ao Menu Principal', value: 'back' },
+        ],
+        loop: false,
+      },
+    ]);
+
+    switch (option) {
+      case 'addProject':
+        await addProjectToStudent();
+        break;
+      case 'listProjects':
+        await listStudentProjects();
+        break;
+      case 'removeProject':
+        await removeProjectFromStudent();
+        break;
+      case 'back':
+        loop = false;
+        break;
+      default:
+        console.log('Opção inválida.');
+        break;
+    }
+  }
 }
 
 async function main() {
@@ -133,43 +361,45 @@ async function main() {
           { name: 'Adicionar Novo Estudante', value: 'add' },
           { name: 'Listar Todos os Estudantes', value: 'list' },
           { name: 'Buscar Estudantes (por nome)', value: 'search' },
-          { name: 'Atualizar Estudantes', value: 'update' },
-          { name: 'Ir para projetos', value: 'projects' },
+          { name: 'Atualizar Estudante', value: 'update' },
+          { name: 'Remover Estudante', value: 'delete' },
+          { name: 'Gerenciar Projetos', value: 'projects' },
           new inquirer.Separator(),
           { name: 'Sair', value: 'exit' },
         ],
+        loop: false,
       },
-
-
     ]);
 
     switch (option) {
       case 'add':
-        await createStudantInDB();
+        await createStudentInDB();
         break;
       case 'list':
-        const todos = await listStudant();
-        console.log(todos)
+        await listStudents();
         break;
       case 'search':
-        await searchStudants();
+        await searchStudents();
         break;
       case 'update':
-        const id = await selectStudantID();
-        await updateStudant(id);
-
+        const idToUpdate = await selectStudentID();
+        if (idToUpdate) {
+          await updateStudent(idToUpdate);
+        }
         break;
-      // case 'projects':
-      //   await this.changeEventStatus();
-      //   break;
-      // case 'register':
-      //   await this.registerParticipant();
-      //   break;
+      case 'delete':
+        const idToDelete = await selectStudentID();
+        if (idToDelete) {
+          await deleteStudent(idToDelete);
+        }
+        break;
+      case 'projects':
+        await projectMenu();
+        break;
       case 'exit':
         loop = false;
-        console.log("Saindo da aplicação...");
+        console.log("\nSaindo da aplicação...");
         break;
-
       default:
         console.log('Opção inválida.');
         break;
@@ -177,74 +407,14 @@ async function main() {
   }
 }
 
-// async function main() {
-//   // const aluno = await prisma.student.create({
-//   //   data: {
-//   //     name: 'rhanegostoso',
-//   //     email: 'rara@gmail.com',
-//   //     enrollment: '123041241',
-//   //     projects: {
-//   //       create: {
-//   //         title: 'dando a bunda com peithon',
-//   //         description: 'auto explicativo..',
-//   //       }
-//   //     },
-//   //   },
-//   // });
-//   // console.log('Novo estudante criado:', aluno);
-//   // const alunos = await prisma.student.findMany({
-//   //   include: {
-//   //     projects: true,
-//   //   }
-//   // });
-//
-//   // console.log(alunos);
-//
-//   // const encontrado = await prisma.student.findRaw({
-//   //   filter: {
-//   //     email: "rara@gmail.com"
-//   //   }
-//   // })
-//   // console.log(encontrado)
-//
-//
-//   // const [projetodeletado, estudandedeletado] = await prisma.$transaction([
-//   //   prisma.project.deleteMany({
-//   //     where: {
-//   //       studentId: "68b98da0a58c13301968bd39"
-//   //     }
-//   //   }),
-//   //   prisma.student.delete({
-//   //     where: {
-//   //       id: "68b98da0a58c13301968bd39"
-//   //     }
-//   //   })
-//   // ])
-//   //
-//   // console.log(`Foram deletados ${projetodeletado.count} projetos.`);
-//   // console.log('Estudante deletado:', estudandedeletado);
-//   //
-//   const alunoUpdate = await prisma.student.update({
-//     where: {
-//       id: "68b9a3c00d35603980b6aa95",
-//     },
-//     data: {
-//       name: "RyanGostoso2",
-//     }
-//   })
-//
-//   console.log(alunoUpdate)
-//
-// }
-
-
 main()
   .catch((e) => {
-    console.error(e);
+    console.error("Um erro inesperado ocorreu:", e);
     process.exit(1);
   })
   .finally(async () => {
     await prisma.$disconnect();
     console.log('Script finalizado.');
   });
+
 
